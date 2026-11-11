@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::recorder_mode::{Act, RATES, SIZES};
 use crate::recording;
-use crate::theme::{self, ACCENT, DANGER, GOOD, TEXT};
+use crate::theme::{self, ACCENT, DANGER, GOOD, MUTED, TEXT};
 use crate::widgets::{self, Kind};
 use eframe::egui::{self, RichText};
 use std::sync::atomic::Ordering;
@@ -18,15 +18,59 @@ fn picker(ui: &mut egui::Ui, id: &str, labels: &[&str], selected: usize) -> Opti
 
 impl App {
     pub fn ctd_panel(&mut self, ui: &mut egui::Ui) {
-        widgets::section(ui, "SETTINGS");
-        ui.horizontal(|ui| {
+        self.stats_card(ui);
+        ui.add_space(8.0);
+        let (label, kind) = if self.ctd.running() { ("Stop", Kind::Danger) } else { ("Start", Kind::Accent) };
+        if widgets::button(ui, label, kind, ui.available_width(), 36.0).clicked() {
+            if self.ctd.running() { self.stop() } else { self.start() }
+        }
+        ui.add_space(8.0);
+        widgets::panel(ui, |ui| self.settings_card(ui));
+        ui.add_space(8.0);
+        widgets::panel(ui, |ui| self.rejoin_card(ui));
+    }
+
+    fn stats_card(&self, ui: &mut egui::Ui) {
+        let (step, runs, wins, losses) = {
+            let status = self.ctd.status.lock().unwrap();
+            let step = if self.ctd.running() && !status.step.is_empty() { status.step.clone() } else { "idle".to_string() };
+            (step, status.runs, status.wins, status.losses)
+        };
+        widgets::panel(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::stat(ui, runs, "RUNS", TEXT);
+                widgets::stat(ui, wins, "WINS", GOOD);
+                widgets::stat(ui, losses, "LOSSES", DANGER);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&step).size(11.5).color(MUTED)).truncate()).on_hover_text(&step);
+                });
+            });
+        });
+    }
+
+    fn settings_card(&mut self, ui: &mut egui::Ui) {
+        let label_width = ui.available_width() - 72.0;
+        egui::Grid::new("settings").spacing([8.0, 8.0]).show(ui, |ui| {
+            ui.set_min_width(label_width);
+            ui.label(RichText::new("Debug mode").size(12.5));
             if widgets::switch(ui, self.settings.debug).clicked() {
                 self.set_debug(!self.settings.debug);
             }
-            ui.label(RichText::new("Debug mode").size(12.5));
+            ui.end_row();
+            ui.label(RichText::new("Shut down PC if disconnected").size(12.5));
+            if widgets::switch(ui, self.settings.shut_down_on_disconnect).clicked() {
+                self.set_shut_down_on_disconnect(!self.settings.shut_down_on_disconnect);
+            }
+            ui.end_row();
+            ui.label(RichText::new("Shut down PC after").size(12.5));
+            let mut runs = self.settings.shut_down_after_runs;
+            let drag = egui::DragValue::new(&mut runs).range(0..=9999).custom_formatter(|runs, _| if runs == 0.0 { "off".to_string() } else { format!("{runs} runs") }).custom_parser(|text| text.trim().trim_end_matches("runs").trim().parse().ok());
+            if ui.add(drag).changed() {
+                self.set_shut_down_after_runs(runs);
+            }
+            ui.end_row();
         });
-        ui.add_space(6.0);
-
+        ui.add_space(8.0);
         let mut leniency = self.ctd.leniency.load(Ordering::Relaxed);
         ui.horizontal(|ui| {
             widgets::section(ui, "LENIENCY");
@@ -35,24 +79,8 @@ impl App {
             });
         });
         ui.spacing_mut().slider_width = ui.available_width();
-        let slider = ui.add(egui::Slider::new(&mut leniency, 0..=100).show_value(false));
-        if slider.changed() {
+        if ui.add(egui::Slider::new(&mut leniency, 0..=100).show_value(false)).changed() {
             self.set_leniency(leniency);
-        }
-
-        widgets::divider(ui);
-        let (step, runs) = {
-            let status = self.ctd.status.lock().unwrap();
-            let step = if self.ctd.running() && !status.step.is_empty() { status.step.clone() } else { "idle".to_string() };
-            (step, status.runs)
-        };
-        widgets::value_row(ui, "STEP", &step, TEXT);
-        widgets::value_row(ui, "RUNS", &runs.to_string(), TEXT);
-        ui.add_space(8.0);
-
-        let (label, kind) = if self.ctd.running() { ("Stop", Kind::Danger) } else { ("Start", Kind::Accent) };
-        if widgets::button(ui, label, kind, ui.available_width(), 34.0).clicked() {
-            if self.ctd.running() { self.stop() } else { self.start() }
         }
     }
 

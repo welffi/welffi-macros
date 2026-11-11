@@ -1,9 +1,17 @@
+mod assets;
+mod recover;
+mod retry;
+
+use assets::{Assets, STEPS, load_assets};
+use crate::disconnect;
 use crate::fit;
 use crate::log::Log;
 use crate::playback::{self, Ended};
-use crate::recording::{self, Recording};
+use crate::rejoin::Target;
 use crate::roblox::{self, Hwnd};
-use crate::store;
+use crate::shutdown::{self, Shutdown};
+use crate::status::Status;
+use crate::variant::Variant;
 use crate::vision::{self, Template};
 use crate::worker::{self, Cancel, Worker};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -11,70 +19,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const BOX: (i32, i32) = (800, 600);
-const TEMPLATES: &str = "ctd";
 const TICK_MS: u64 = 300;
 const FOCUS_MS: u64 = 150;
 const SWAP_MS: u64 = 500;
 const WAIT_LOG_MS: u64 = 10_000;
 const RESULTS_STEP: usize = 1;
-
-struct Step {
-    name: &'static str,
-    templates: &'static [&'static str],
-    tolerance: i32,
-    recording: &'static str,
-    label: &'static str,
-    hand_off_ms: Option<u64>,
-}
-
-const STEPS: [Step; 2] = [
-    Step { name: "start_game", templates: &["start_game"], tolerance: 60, recording: "setup_camera", label: "setup camera", hand_off_ms: None },
-    Step { name: "results", templates: &["results_lost", "results_won"], tolerance: 60, recording: "restart", label: "restart", hand_off_ms: Some(1500) },
-];
-
-#[derive(Clone, Copy, Default, PartialEq)]
-pub enum Variant {
-    #[default]
-    Easy,
-    EasyClear,
-}
-
-impl Variant {
-    pub fn id(self) -> &'static str {
-        match self {
-            Variant::Easy => "ctd_easy",
-            Variant::EasyClear => "ctd_easy_clear",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Variant::Easy => "Easy",
-            Variant::EasyClear => "Easy Clear",
-        }
-    }
-
-    fn recordings(self) -> &'static str {
-        match self {
-            Variant::Easy => "ctd/easy",
-            Variant::EasyClear => "ctd/easy_clear",
-        }
-    }
-
-    pub fn every_window(self) -> bool {
-        self == Variant::Easy
-    }
-
-    fn cuts_setup_on_results(self) -> bool {
-        self == Variant::EasyClear
-    }
-}
-
-#[derive(Default)]
-pub struct Status {
-    pub step: String,
-    pub runs: u32,
-}
+const WON_TEMPLATE: &str = "results_won";
 
 #[derive(Default)]
 pub struct Ctd {
@@ -82,6 +32,8 @@ pub struct Ctd {
     worker: Option<Worker>,
     pub status: Arc<Mutex<Status>>,
     pub leniency: Arc<AtomicI32>,
+    pub shutdown: Shutdown,
+    pub rejoin: Option<Target>,
 }
 
 struct Client {
@@ -90,12 +42,10 @@ struct Client {
     step: usize,
     misses: u64,
     fresh: bool,
+    next_disconnect_check: Instant,
     state: String,
-}
-
-struct Assets {
-    templates: Vec<Vec<Template>>,
-    recordings: Vec<Recording>,
+    quiet_since: Instant,
+    recovering: Option<Instant>,
 }
 
 enum Outcome {
@@ -111,6 +61,8 @@ struct Run {
     assets: Assets,
     status: Arc<Mutex<Status>>,
     leniency: Arc<AtomicI32>,
+    shutdown: Shutdown,
+    target: Option<Target>,
     log: Log,
     cancel: Cancel,
 }
@@ -125,8 +77,10 @@ impl Ctd {
             return;
         }
         let (variant, status, leniency, log) = (self.variant, self.status.clone(), self.leniency.clone(), log.clone());
+        let (shutdown, target) = (self.shutdown.clone(), self.rejoin.clone());
         self.worker = Some(Worker::spawn(move |cancel| {
-            let Some(mut run) = Run::prepare(variant, fitted, status, leniency, log.clone(), cancel) else {
+            *status.lock().unwrap() = Status::default();
+            let Some(mut run) = Run::prepare(variant, fitted, status, leniency, shutdown, target, log.clone(), cancel) else {
                 return;
             };
             log.ok(format!("{} started", variant.name()));
@@ -143,35 +97,8 @@ impl Ctd {
     }
 }
 
-fn load_assets(variant: Variant, log: &Log) -> Option<Assets> {
-    let mut missing = Vec::new();
-    let mut assets = Assets { templates: Vec::new(), recordings: Vec::new() };
-    for step in &STEPS {
-        match recording::load(&store::recording_path(variant.recordings(), step.recording)) {
-            Some(take) => {
-                log.info(format!("{} - {} frames, {:.1}s", step.recording, take.frames.len(), take.duration() / 1000.0));
-                assets.recordings.push(take);
-            }
-            None => missing.push(format!("{}.txt", step.recording)),
-        }
-        let mut found = Vec::new();
-        for name in step.templates {
-            match vision::load(&store::template_path(TEMPLATES, name)) {
-                Some(template) => found.push(template),
-                None => missing.push(format!("{name}.png")),
-            }
-        }
-        assets.templates.push(found);
-    }
-    if !missing.is_empty() {
-        log.warn(format!("Missing files: {}", missing.join(", ")));
-        return None;
-    }
-    Some(assets)
-}
-
 impl Run {
-    fn prepare(variant: Variant, mut fitted: Vec<Hwnd>, status: Arc<Mutex<Status>>, leniency: Arc<AtomicI32>, log: Log, cancel: Cancel) -> Option<Run> {
+    fn prepare(variant: Variant, mut fitted: Vec<Hwnd>, status: Arc<Mutex<Status>>, leniency: Arc<AtomicI32>, shutdown: Shutdown, target: Option<Target>, log: Log, cancel: Cancel) -> Option<Run> {
         if !variant.every_window() {
             fitted.truncate(1);
         } else if roblox::find_all().len() != fitted.len() {
@@ -191,14 +118,24 @@ impl Run {
                 log.error("A Roblox window moved or resized - press Detect + Fit first");
                 return None;
             }
-            clients.push(Client { window, number: index + 1, step: 0, misses: 0, fresh: true, state: String::new() });
+            clients.push(Client { window, number: index + 1, step: 0, misses: 0, fresh: true, next_disconnect_check: Instant::now(), state: String::new(), quiet_since: Instant::now(), recovering: None });
         }
         if clients.is_empty() {
             log.error("No fitted Roblox windows - press Detect + Fit first");
             return None;
         }
+        let target = target.filter(|_| {
+            let single = clients.len() == 1;
+            if !single {
+                log.warn("Rejoin needs a single Roblox window - leaving it off");
+            }
+            single
+        });
         let assets = load_assets(variant, &log)?;
-        let mut run = Run { variant, clients, shown: None, assets, status, leniency, log, cancel };
+        if (shutdown.on_disconnect.load(Ordering::Relaxed) || target.is_some()) && assets.disconnected.is_none() {
+            log.warn("Missing global/disconnected.png - can't watch for disconnects");
+        }
+        let mut run = Run { variant, clients, shown: None, assets, status, leniency, shutdown, target, log, cancel };
         for index in 0..run.clients.len() {
             run.set_step(index, 0);
             let window = run.clients[index].window;
@@ -229,6 +166,7 @@ impl Run {
 
     fn set_step(&mut self, index: usize, step: usize) {
         self.clients[index].step = step;
+        self.clients[index].quiet_since = Instant::now();
         self.set_state(index, format!("wait {}", STEPS[step].name));
     }
 
@@ -296,8 +234,11 @@ impl Run {
     }
 
     fn look(&self, index: usize, step: usize) -> Option<vision::Found> {
-        let tolerance = vision::tolerance(STEPS[step].tolerance, self.leniency.load(Ordering::Relaxed));
-        let templates = &self.assets.templates[step];
+        self.search(index, &self.assets.templates[step], STEPS[step].tolerance)
+    }
+
+    fn search(&self, index: usize, templates: &[Template], base_tolerance: i32) -> Option<vision::Found> {
+        let tolerance = vision::tolerance(base_tolerance, self.leniency.load(Ordering::Relaxed));
         match roblox::client_rect(self.clients[index].window).map(|area| vision::find(area, templates, tolerance)) {
             Some(Ok(found)) => found,
             Some(Err(error)) => {
@@ -308,9 +249,37 @@ impl Run {
         }
     }
 
+    fn disconnected(&mut self, index: usize) -> bool {
+        let Some(template) = &self.assets.disconnected else {
+            return false;
+        };
+        let watching = self.shutdown.on_disconnect.load(Ordering::Relaxed) || self.target.is_some();
+        let client = &mut self.clients[index];
+        if !watching || !disconnect::due(&mut client.next_disconnect_check) {
+            return false;
+        }
+        disconnect::showing(client.window, template, self.leniency.load(Ordering::Relaxed))
+    }
+
+    fn handle_disconnect(&mut self, index: usize) -> Outcome {
+        let tag = self.tag(&self.clients[index]);
+        if self.target.is_some() {
+            self.log.warn(format!("{tag}Disconnected - rejoining"));
+            return self.rejoin(index);
+        }
+        shutdown::begin(&format!("{tag}Disconnected"), &self.log);
+        Outcome::Stop
+    }
+
     fn try_client(&mut self, index: usize) -> Outcome {
         if self.show(index).is_err() {
             return Outcome::Stop;
+        }
+        if self.disconnected(index) {
+            return self.handle_disconnect(index);
+        }
+        if self.clients[index].recovering.is_some() {
+            return self.recover(index);
         }
         if std::mem::take(&mut self.clients[index].fresh) && self.clients[index].step != RESULTS_STEP && self.look(index, RESULTS_STEP).is_some() {
             self.log.info(format!("{}Already on results", self.tag(&self.clients[index])));
@@ -326,11 +295,22 @@ impl Run {
             if every > 0 && self.clients[index].misses % every == 0 {
                 self.log.info(format!("{tag}Still waiting for {template}"));
             }
+            if self.clients[index].step != RESULTS_STEP && self.cancel_showing(index) {
+                return self.retry_restart(index);
+            }
+            if self.in_lobby(index) {
+                self.begin_recovery(index);
+            }
             return Outcome::Waiting;
         };
 
         self.log.ok(format!("{tag}{template} found"));
         self.log.debug(format!("{template} at {},{}", found.x, found.y));
+        if self.clients[index].step == RESULTS_STEP {
+            let won = STEPS[RESULTS_STEP].templates[found.template] == WON_TEMPLATE;
+            self.log.info(format!("{tag}{}", if won { "Won" } else { "Lost" }));
+            self.status.lock().unwrap().record(won);
+        }
         self.clients[index].misses = 0;
         self.set_state(index, step.label.to_string());
         if !roblox::is_foreground(window) {
@@ -376,7 +356,15 @@ impl Run {
 
         let current = self.clients[index].step;
         if current == STEPS.len() - 1 {
-            self.status.lock().unwrap().runs += 1;
+            let runs = {
+                let mut status = self.status.lock().unwrap();
+                status.runs += 1;
+                status.runs
+            };
+            if self.shutdown.runs_done(runs) {
+                shutdown::begin(&format!("{runs} runs done"), &self.log);
+                return Outcome::Stop;
+            }
         }
         self.set_step(index, (current + 1) % STEPS.len());
         Outcome::Played

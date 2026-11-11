@@ -1,5 +1,5 @@
 use crate::theme::{self, ACCENT, ACCENT_HOVER, ACCENT_INK, DANGER, DANGER_HOVER, FAINT, LINE, MUTED, RAISED, RAISED_HOVER, SURFACE, TEXT};
-use eframe::egui::{self, Align2, CornerRadius, CursorIcon, FontId, Response, RichText, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, CornerRadius, CursorIcon, FontId, Margin, Response, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Kind {
@@ -73,5 +73,29 @@ pub fn value_row(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color3
     ui.horizontal(|ui| {
         ui.add_sized([56.0, 18.0], egui::Label::new(RichText::new(name).size(11.0).color(FAINT)));
         ui.label(RichText::new(value).family(theme::semibold()).size(13.0).color(color));
+    });
+}
+
+pub fn panel(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE.fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        contents(ui);
+    });
+}
+
+pub fn stat(ui: &mut egui::Ui, value: u32, label: &str, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 40.0), Sense::hover());
+    let painter = ui.painter();
+    painter.text(rect.center_top() + Vec2::new(0.0, 13.0), Align2::CENTER_CENTER, value.to_string(), FontId::new(22.0, theme::semibold()), color);
+    painter.text(rect.center_top() + Vec2::new(0.0, 33.0), Align2::CENTER_CENTER, label, FontId::proportional(10.5), FAINT);
+}
+
+pub fn keycap(ui: &mut egui::Ui, key: &str, action: &str) {
+    egui::Frame::NONE.fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(7)).inner_margin(Margin::symmetric(7, 3)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.label(RichText::new(key).family(theme::semibold()).size(11.5).color(ACCENT));
+            ui.label(RichText::new(action).size(11.5).color(MUTED));
+        });
     });
 }

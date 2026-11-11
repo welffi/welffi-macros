@@ -1,6 +1,7 @@
 use crate::app::{App, Page};
-use crate::ctd::Variant;
+use crate::variant::Variant;
 use crate::fit;
+use crate::launch;
 use crate::roblox;
 use crate::theme::{self, ACCENT, DANGER, FAINT, GOOD, INK, LINE, MUTED, RAISED, TEXT};
 use crate::widgets::{self, Kind};
@@ -20,6 +21,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop();
+        launch::release_client_storage();
     }
 }
 
@@ -33,13 +35,6 @@ fn back_button(ui: &mut egui::Ui) -> bool {
     ui.painter().rect(rect, CornerRadius::same(8), fill, Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
     theme::centered_text(ui.painter(), rect.center(), "‹", FontId::proportional(18.0), MUTED);
     response.on_hover_cursor(CursorIcon::PointingHand).clicked()
-}
-
-fn bind_row(ui: &mut egui::Ui, key: &str, action: &str) {
-    ui.horizontal(|ui| {
-        ui.add_sized([72.0, 18.0], egui::Label::new(RichText::new(key).family(theme::semibold()).size(12.5).color(ACCENT)));
-        ui.label(RichText::new(action).size(12.5).color(MUTED));
-    });
 }
 
 fn log_color(line: &str) -> egui::Color32 {
@@ -86,52 +81,56 @@ impl App {
                 Page::Ctd(variant) => ("CTD", variant.name()),
                 _ => ("Tools", "Recorder"),
             };
-            ui.label(RichText::new(game).size(13.0).color(FAINT));
-            title(ui, name);
-        });
-        ui.add_space(12.0);
-        self.window_status(ui);
-        widgets::divider(ui);
-        match page {
-            Page::Ctd(_) => self.ctd_panel(ui),
-            _ => self.recorder_panel(ui),
-        }
-        widgets::divider(ui);
-        self.keys(ui, page);
-        widgets::divider(ui);
-        self.log_box(ui);
-    }
-
-    fn window_status(&mut self, ui: &mut egui::Ui) {
-        widgets::section(ui, "ROBLOX WINDOW");
-        let size = self.box_size();
-        let (color, text) = match self.window.filter(|window| roblox::exists(*window)) {
-            None => (DANGER, "not found".to_string()),
-            Some(window) if fit::is_fitted(window, size) => (GOOD, roblox::describe(window)),
-            Some(window) => (ACCENT, format!("{} - needs a fit", roblox::describe(window))),
-        };
-        ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(Vec2::new(10.0, 30.0), Sense::hover());
-            ui.painter().circle_filled(dot.center(), 4.0, color);
-            ui.label(RichText::new(text).size(12.5).color(TEXT));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(RichText::new(game).size(10.5).color(FAINT));
+                title(ui, name);
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.is_fitting() { "Fitting..." } else { "Detect + Fit" };
-                if widgets::button(ui, label, Kind::Plain, 110.0, 30.0).clicked() {
+                if widgets::button(ui, label, Kind::Plain, 96.0, 28.0).clicked() {
                     self.detect_and_fit();
                 }
             });
         });
+        ui.add_space(6.0);
+        self.window_status(ui);
+        ui.add_space(10.0);
+        match page {
+            Page::Ctd(_) => self.ctd_panel(ui),
+            _ => widgets::panel(ui, |ui| self.recorder_panel(ui)),
+        }
+        ui.add_space(10.0);
+        self.keys(ui, page);
+        ui.add_space(10.0);
+        self.log_box(ui);
+    }
+
+    fn window_status(&self, ui: &mut egui::Ui) {
+        let size = self.box_size();
+        let (color, text) = match self.window.filter(|window| roblox::exists(*window)) {
+            None => (DANGER, "no Roblox window".to_string()),
+            Some(window) if fit::is_fitted(window, size) => (GOOD, roblox::describe(window)),
+            Some(window) => (ACCENT, format!("{} - needs a fit", roblox::describe(window))),
+        };
+        ui.horizontal(|ui| {
+            let (dot, _) = ui.allocate_exact_size(Vec2::new(10.0, 16.0), Sense::hover());
+            ui.painter().circle_filled(dot.center(), 4.0, color);
+            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(MUTED)).truncate());
+        });
     }
 
     fn keys(&self, ui: &mut egui::Ui, page: Page) {
-        widgets::section(ui, "KEYS");
         let binds: &[(&str, &str)] = match page {
-            Page::Recorder => &[("Ctrl+R", "Record"), ("Ctrl+P", "Play (loop)"), ("F3", "Stop")],
-            _ => &[("F2", "Start / stop"), ("F3", "Stop")],
+            Page::Recorder => &[("Ctrl+R", "Record"), ("Ctrl+P", "Play"), ("F3", "Stop")],
+            _ => &[("F2", "Start/stop"), ("F3", "Stop")],
         };
-        for (key, action) in binds.iter().chain(&[("Ctrl+F1", "Show / hide"), ("Ctrl+Esc", "Exit")]) {
-            bind_row(ui, key, action);
-        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            for (key, action) in binds.iter().chain(&[("Ctrl+F1", "Show/hide"), ("Ctrl+Esc", "Exit")]) {
+                widgets::keycap(ui, key, action);
+            }
+        });
     }
 
     fn log_box(&mut self, ui: &mut egui::Ui) {

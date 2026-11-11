@@ -1,3 +1,4 @@
+use crate::accounts::Server;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -5,15 +6,25 @@ use std::path::{Path, PathBuf};
 const EASY_SETUP: &[u8] = include_bytes!("../builtin/recordings/ctd/easy/setup_camera.txt");
 const EASY_RESTART: &[u8] = include_bytes!("../builtin/recordings/ctd/easy/restart.txt");
 const EASY_CLEAR_SETUP: &[u8] = include_bytes!("../builtin/recordings/ctd/easy_clear/setup_camera.txt");
+const ENTER_TOILET_CITY: &[u8] = include_bytes!("../builtin/recordings/ctd/easy_clear/enter_toilet_city.txt");
+const RESTART_RETRY: &[u8] = include_bytes!("../builtin/recordings/ctd/easy_clear/restart_retry.txt");
 
-const BUILT_IN: [(&str, &[u8]); 7] = [
+const BUILT_IN: [(&str, &[u8]); 15] = [
     ("templates/ctd/start_game.png", include_bytes!("../builtin/templates/ctd/start_game.png")),
     ("templates/ctd/results_lost.png", include_bytes!("../builtin/templates/ctd/results_lost.png")),
     ("templates/ctd/results_won.png", include_bytes!("../builtin/templates/ctd/results_won.png")),
+    ("templates/ctd/toilet_city.png", include_bytes!("../builtin/templates/ctd/toilet_city.png")),
+    ("templates/ctd/units_lobby.png", include_bytes!("../builtin/templates/ctd/units_lobby.png")),
+    ("templates/ctd/results_cancel.png", include_bytes!("../builtin/templates/ctd/results_cancel.png")),
+    ("templates/global/disconnected.png", include_bytes!("../builtin/templates/global/disconnected.png")),
     ("recordings/ctd/easy/setup_camera.txt", EASY_SETUP),
     ("recordings/ctd/easy/restart.txt", EASY_RESTART),
     ("recordings/ctd/easy_clear/setup_camera.txt", EASY_CLEAR_SETUP),
     ("recordings/ctd/easy_clear/restart.txt", EASY_RESTART),
+    ("recordings/ctd/easy/enter_toilet_city.txt", ENTER_TOILET_CITY),
+    ("recordings/ctd/easy_clear/enter_toilet_city.txt", ENTER_TOILET_CITY),
+    ("recordings/ctd/easy/restart_retry.txt", RESTART_RETRY),
+    ("recordings/ctd/easy_clear/restart_retry.txt", RESTART_RETRY),
 ];
 
 pub const DEFAULT_LENIENCY: i32 = 50;
@@ -59,13 +70,18 @@ pub fn seed() {
 pub struct Settings {
     pub leniency: BTreeMap<String, i32>,
     pub debug: bool,
+    pub shut_down_on_disconnect: bool,
+    pub shut_down_after_runs: u32,
     pub recorder_size: usize,
     pub recorder_rate: usize,
+    pub rejoin_account: String,
+    pub rejoin_server: String,
+    pub servers: Vec<Server>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { leniency: BTreeMap::new(), debug: false, recorder_size: 0, recorder_rate: 1 }
+        Settings { leniency: BTreeMap::new(), debug: false, shut_down_on_disconnect: false, shut_down_after_runs: 0, recorder_size: 0, recorder_rate: 1, rejoin_account: String::new(), rejoin_server: String::new(), servers: Vec::new() }
     }
 }
 

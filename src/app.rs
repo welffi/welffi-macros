@@ -1,8 +1,11 @@
-use crate::ctd::{self, Ctd, Variant};
+use crate::accounts::{Account, Server};
+use crate::ctd::{self, Ctd};
+use crate::variant::Variant;
 use crate::fit::{self, Size};
 use crate::hotkeys::{self, Event, Hotkey, Hotkeys};
 use crate::log::Log;
 use crate::recorder_mode::{self, RecorderMode};
+use crate::rejoin_panel::AddServer;
 use crate::roblox::{self, Hwnd};
 use crate::store::Settings;
 use crate::theme;
@@ -28,6 +31,9 @@ pub struct App {
     pub window: Option<Hwnd>,
     pub ctd: Ctd,
     pub recorder: RecorderMode,
+    pub accounts: Vec<Account>,
+    pub servers: Vec<Server>,
+    pub add_server: AddServer,
     hotkeys: Hotkeys,
     fitted: Vec<Hwnd>,
     fitting: Option<JoinHandle<FitResult>>,
@@ -40,8 +46,12 @@ impl App {
         let settings = Settings::load();
         log.set_debug(settings.debug);
         let ctd = Ctd::default();
+        ctd.shutdown.on_disconnect.store(settings.shut_down_on_disconnect, Ordering::Relaxed);
+        ctd.shutdown.after_runs.store(settings.shut_down_after_runs, Ordering::Relaxed);
         let hotkeys = hotkeys::start(cc.egui_ctx.clone());
-        App { log, settings, page: Page::Home, window: None, ctd, recorder: RecorderMode::default(), hotkeys, fitted: Vec::new(), fitting: None }
+        let mut app = App { log, settings, page: Page::Home, window: None, ctd, recorder: RecorderMode::default(), accounts: Vec::new(), servers: Vec::new(), add_server: AddServer::default(), hotkeys, fitted: Vec::new(), fitting: None };
+        app.refresh_rejoin();
+        app
     }
 
     pub fn box_size(&self) -> Size {
@@ -58,6 +68,7 @@ impl App {
             self.ctd.leniency.store(self.settings.leniency(variant.id()), Ordering::Relaxed);
             *self.ctd.status.lock().unwrap() = Default::default();
         }
+        self.refresh_rejoin();
         self.hotkeys.recorder_keys(page == Page::Recorder);
         self.window = roblox::find();
         self.fitted = self.window.into_iter().collect();
@@ -164,6 +175,19 @@ impl App {
         self.ctd.leniency.store(value, Ordering::Relaxed);
         self.settings.leniency.insert(self.ctd.variant.id().to_string(), value);
         self.settings.save();
+    }
+
+    pub fn set_shut_down_on_disconnect(&mut self, on: bool) {
+        self.settings.shut_down_on_disconnect = on;
+        self.settings.save();
+        self.ctd.shutdown.on_disconnect.store(on, Ordering::Relaxed);
+        self.log.info(format!("Shut down on disconnect {}", if on { "on" } else { "off" }));
+    }
+
+    pub fn set_shut_down_after_runs(&mut self, runs: u32) {
+        self.settings.shut_down_after_runs = runs;
+        self.settings.save();
+        self.ctd.shutdown.after_runs.store(runs, Ordering::Relaxed);
     }
 
     pub fn set_debug(&mut self, on: bool) {

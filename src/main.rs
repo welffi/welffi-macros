@@ -1,12 +1,16 @@
 #![windows_subsystem = "windows"]
 
+mod accounts;
 mod app;
 mod capture;
 mod ctd;
+mod disconnect;
 mod fit;
 mod hotkeys;
 mod input;
 mod keys;
+mod launch;
+mod links;
 mod log;
 mod panels;
 mod playback;
@@ -14,9 +18,16 @@ mod raw_mouse;
 mod recorder;
 mod recorder_mode;
 mod recording;
+mod rejoin;
+mod rejoin_panel;
 mod roblox;
+mod roblox_api;
+mod seal;
+mod shutdown;
+mod status;
 mod store;
 mod theme;
+mod variant;
 mod view;
 mod vision;
 mod widgets;

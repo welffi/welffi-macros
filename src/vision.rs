@@ -14,6 +14,7 @@ pub struct Template {
 pub struct Found {
     pub x: i32,
     pub y: i32,
+    pub template: usize,
 }
 
 pub fn load(path: &Path) -> Option<Template> {
@@ -69,7 +70,7 @@ pub fn find_in(shot: &Shot, template: &Template, tolerance: u8) -> Option<(usize
 
 pub fn find(area: Rect, templates: &[Template], tolerance: u8) -> Result<Option<Found>, String> {
     let shot = capture::grab(area).ok_or("couldn't read the screen")?;
-    Ok(templates.iter().find_map(|template| find_in(&shot, template, tolerance)).map(|(x, y)| Found { x: area.x + x as i32, y: area.y + y as i32 }))
+    Ok(templates.iter().enumerate().find_map(|(template, image)| find_in(&shot, image, tolerance).map(|(x, y)| Found { x: area.x + x as i32, y: area.y + y as i32, template })))
 }
 
 #[cfg(test)]
